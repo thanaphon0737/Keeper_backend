@@ -115,7 +115,7 @@ app.post("/api/users/login", async (req, res) => {
         { expiresIn: "1h" }
       );
       res.cookie("token", token, {
-        maxAge: 360000,
+        maxAge: 3600000,
         secure: true,
         httpOnly: true,
         sameSite: "Strict",
@@ -173,6 +173,7 @@ app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
       `SELECT * FROM notes WHERE user_id = $1`,
       [userId]
     );
+    console.log(noteData)
     res.json(noteData.rows);
   } catch (error) {
     console.error("error executing query", error.stack);
@@ -198,7 +199,7 @@ app.post("/api/users/:userId/notes", authenticateToken, async (req, res) => {
 
 //update notes
 app.put(
-  "/api/user/:userId/notes/:noteId",
+  "/api/users/:userId/notes/:noteId",
   authenticateToken,
   async (req, res) => {
     const { userId, noteId } = req.params;
@@ -221,7 +222,7 @@ app.put(
 
 //delete notes
 app.delete(
-  "/api/user/:userId/notes/:noteId",
+  "/api/users/:userId/notes/:noteId",
   authenticateToken,
   async (req, res) => {
     const { userId, noteId } = req.params;
