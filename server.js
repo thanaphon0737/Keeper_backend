@@ -110,7 +110,7 @@ app.post("/api/users/login", async (req, res) => {
         return res.status(400).send("Invalid password");
       }
       const token = jwt.sign(
-        { email: userData.rows[0].email },
+        { email: userData.rows[0].email, userId: userData.rows[0].id },
         process.env.JWT_SECRET,
         { expiresIn: "1h" }
       );
@@ -148,16 +148,20 @@ app.get("/api/users/logout", async (req, res) => {
 //get accountById
 app.get("/api/users/:id", authenticateToken, async (req, res) => {
   const id = req.params.id;
-  console.log(id);
+  console.log(req.user);
   try {
-    const result = await pool.query(
-      "SELECT id, username, email FROM users WHERE id = $1",
-      [id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Account not found" });
+    if (id === req.user.userId) {
+      const result = await pool.query(
+        "SELECT id, username, email FROM users WHERE id = $1",
+        [id]
+      );
+      res.json(result.rows[0]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+    } else {
+      res.status(404).json({ error: "Unauthorize account" });
     }
-    res.json(result.rows[0]);
   } catch (error) {
     console.error(error.stack);
     res.status(500).json({ error: error.message });
@@ -167,17 +171,20 @@ app.get("/api/users/:id", authenticateToken, async (req, res) => {
 app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
   console.log("query notes");
   const userId = req.params.userId;
-
-  try {
-    const noteData = await pool.query(
-      `SELECT * FROM notes WHERE user_id = $1`,
-      [userId]
-    );
-    console.log(noteData)
-    res.json(noteData.rows);
-  } catch (error) {
-    console.error("error executing query", error.stack);
-    res.status(500).json({ error: error.message });
+  if (req.user.userId === userId) {
+    try {
+      const noteData = await pool.query(
+        `SELECT * FROM notes WHERE user_id = $1`,
+        [userId]
+      );
+      console.log(noteData);
+      res.json(noteData.rows);
+    } catch (error) {
+      console.error("error executing query", error.stack);
+      res.status(500).json({ error: error.message });
+    }
+  } else {
+    res.status(404).json({ error: "Unauthorize account" });
   }
 });
 //create notes
@@ -185,15 +192,30 @@ app.post("/api/users/:userId/notes", authenticateToken, async (req, res) => {
   const { userId } = req.params;
   // console.log(req.params)
   const { title, content } = req.body;
-  try {
-    const result = await pool.query(
-      `INSERT INTO notes (user_id,title,content) VALUES ($1, $2, $3) RETURNING *`,
-      [userId, title, content]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error(error.stack);
-    res.status(500).json({ error: error.message });
+
+  if (title !== null || content !== null) {
+    if (title === null) {
+      res.status(404).json({ error: "title is empty" });
+    } else if (content === null) {
+      res.status(404).json({ error: "content is empty" });
+    } else {
+      if (req.user.userId === userId) {
+        try {
+          const result = await pool.query(
+            `INSERT INTO notes (user_id,title,content) VALUES ($1, $2, $3) RETURNING *`,
+            [userId, title, content]
+          );
+          res.status(201).json(result.rows[0]);
+        } catch (error) {
+          console.error(error.stack);
+          res.status(500).json({ error: error.message });
+        }
+      } else {
+        res.status(404).json({ error: "Unauthorize account" });
+      }
+    }
+  } else {
+    res.status(404).json({ error: "filed is empty" });
   }
 });
 
@@ -204,18 +226,22 @@ app.put(
   async (req, res) => {
     const { userId, noteId } = req.params;
     const { title, content } = req.body;
-    try {
-      const result = await pool.query(
-        `UPDATE notes 
-            SET title = $1, content = $2 
-            WHERE user_id = $3 AND id = $4 
-            RETURNING *`,
-        [title, content, userId, noteId]
-      );
-      res.json(result.rows[0]);
-    } catch (error) {
-      console.error(error.stack);
-      res.status(500).json({ error: error.message });
+    if (req.user.userId === userId) {
+      try {
+        const result = await pool.query(
+          `UPDATE notes 
+              SET title = $1, content = $2 
+              WHERE user_id = $3 AND id = $4 
+              RETURNING *`,
+          [title, content, userId, noteId]
+        );
+        res.json(result.rows[0]);
+      } catch (error) {
+        // console.error(error.stack);
+        res.status(500).json({ error: error.message });
+      }
+    } else {
+      res.status(404).json({ error: "Unauthorize account" });
     }
   }
 );
@@ -226,16 +252,20 @@ app.delete(
   authenticateToken,
   async (req, res) => {
     const { userId, noteId } = req.params;
-    try {
-      const result = await pool.query(
-        `DELETE FROM notes
-            WHERE id = $1
-            RETURNING *`,
-        [noteId]
-      );
-      res.json({ message: "Note deleted" });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+    if (req.user.userId === userId) {
+      try {
+        const result = await pool.query(
+          `DELETE FROM notes
+          WHERE id = $1
+          RETURNING *`,
+          [noteId]
+        );
+        res.json({ message: "Note deleted" });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    }else {
+      res.status(404).json({error: "Unauthorize account"})
     }
   }
 );
@@ -243,5 +273,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
-console.log("hello");
 //its local
