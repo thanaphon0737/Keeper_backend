@@ -195,9 +195,9 @@ app.post("/api/users/:userId/notes", authenticateToken, async (req, res) => {
 
   if (title !== null || content !== null) {
     if (title === null) {
-      res.status(404).json({ error: "title is empty" });
+      res.status(400).json({ error: "title is empty" });
     } else if (content === null) {
-      res.status(404).json({ error: "content is empty" });
+      res.status(400).json({ error: "content is empty" });
     } else {
       if (req.user.userId === userId) {
         try {
@@ -211,7 +211,7 @@ app.post("/api/users/:userId/notes", authenticateToken, async (req, res) => {
           res.status(500).json({ error: error.message });
         }
       } else {
-        res.status(404).json({ error: "Unauthorize account" });
+        res.status(401).json({ error: "Unauthorize account" });
       }
     }
   } else {
@@ -226,22 +226,32 @@ app.put(
   async (req, res) => {
     const { userId, noteId } = req.params;
     const { title, content } = req.body;
-    if (req.user.userId === userId) {
-      try {
-        const result = await pool.query(
-          `UPDATE notes 
-              SET title = $1, content = $2 
-              WHERE user_id = $3 AND id = $4 
-              RETURNING *`,
-          [title, content, userId, noteId]
-        );
-        res.json(result.rows[0]);
-      } catch (error) {
-        // console.error(error.stack);
-        res.status(500).json({ error: error.message });
+    if (title !== null || content !== null) {
+      if (title === null) {
+        res.status(400).json({ error: "title is empty" });
+      } else if (content === null) {
+        res.status(400).json({ error: "content is empty" });
+      } else {
+        if (req.user.userId === userId) {
+          try {
+            const result = await pool.query(
+              `UPDATE notes 
+            SET title = $1, content = $2 
+            WHERE user_id = $3 AND id = $4 
+            RETURNING *`,
+              [title, content, userId, noteId]
+            );
+            res.json(result.rows[0]);
+          } catch (error) {
+            // console.error(error.stack);
+            res.status(500).json({ error: error.message });
+          }
+        } else {
+          res.status(401).json({ error: "Unauthorize account" });
+        }
       }
     } else {
-      res.status(404).json({ error: "Unauthorize account" });
+      res.status(400).json({ error: "filed is empty" });
     }
   }
 );
@@ -260,12 +270,12 @@ app.delete(
           RETURNING *`,
           [noteId]
         );
-        res.json({ message: "Note deleted" });
+        res.status(204).json({ message: "Note deleted" });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
-    }else {
-      res.status(404).json({error: "Unauthorize account"})
+    } else {
+      res.status(401).json({ error: "Unauthorize account" });
     }
   }
 );
