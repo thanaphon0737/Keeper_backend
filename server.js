@@ -5,6 +5,11 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+
 const { Pool } = pg;
 const app = express();
 
@@ -14,6 +19,8 @@ app.use(cookieParser());
 // Middleware to parse URL-encoded bodies
 app.use(express.urlencoded({ extended: true }));
 
+//allow public directory
+app.use("/uploads", express.static("uploads"));
 // Middleware to parse JSON bodies
 app.use(express.json());
 app.use(cors({ credentials: true, origin: "http://localhost:5173" }));
@@ -33,6 +40,26 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
+// rate limitaion for api
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: "Too many request, try again later.",
+});
+app.use(limiter);
+
+//setup upload files
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + "-" + file.originalname;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({ storage });
 // authentication
 const authenticateToken = async (req, res, next) => {
   const token = await req.cookies.token;
@@ -160,7 +187,7 @@ app.get("/api/users/:id", authenticateToken, async (req, res) => {
         return res.status(404).json({ error: "Account not found" });
       }
     } else {
-      res.status(404).json({ error: "Unauthorize account" });
+      res.status(401).json({ error: "Unauthorize account" });
     }
   } catch (error) {
     console.error(error.stack);
@@ -171,61 +198,46 @@ app.get("/api/users/:id", authenticateToken, async (req, res) => {
 app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
   console.log("query notes");
   const userId = req.params.userId;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
   if (req.user.userId === userId) {
     try {
       const noteData = await pool.query(
-        `SELECT * FROM notes WHERE user_id = $1`,
-        [userId]
+        `SELECT * FROM notes WHERE user_id = $1 and deleted = false ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
       );
-      console.log(noteData);
-      res.json(noteData.rows);
+      const countResult = await pool.query(
+        "SELECT COUNT(*) FROM notes WHERE deleted = false"
+      );
+      const total = parseInt(countResult.rows[0].count);
+
+      console.log(total);
+      res.json({
+        page,
+        totalPages: Math.ceil(total / limit),
+        notes: noteData.rows,
+      });
     } catch (error) {
       console.error("error executing query", error.stack);
       res.status(500).json({ error: error.message });
     }
   } else {
-    res.status(404).json({ error: "Unauthorize account" });
+    res.status(401).json({ error: "Unauthorize account" });
   }
 });
 //create notes
-app.post("/api/users/:userId/notes", authenticateToken, async (req, res) => {
-  const { userId } = req.params;
-  // console.log(req.params)
-  const { title, content } = req.body;
-
-  if (title !== null || content !== null) {
-    if (title === null) {
-      res.status(400).json({ error: "title is empty" });
-    } else if (content === null) {
-      res.status(400).json({ error: "content is empty" });
-    } else {
-      if (req.user.userId === userId) {
-        try {
-          const result = await pool.query(
-            `INSERT INTO notes (user_id,title,content) VALUES ($1, $2, $3) RETURNING *`,
-            [userId, title, content]
-          );
-          res.status(201).json(result.rows[0]);
-        } catch (error) {
-          console.error(error.stack);
-          res.status(500).json({ error: error.message });
-        }
-      } else {
-        res.status(401).json({ error: "Unauthorize account" });
-      }
-    }
-  } else {
-    res.status(404).json({ error: "filed is empty" });
-  }
-});
-
-//update notes
-app.put(
-  "/api/users/:userId/notes/:noteId",
+app.post(
+  "/api/users/:userId/notes",
+  upload.single("file"),
   authenticateToken,
   async (req, res) => {
-    const { userId, noteId } = req.params;
+    const { userId } = req.params;
+    // console.log(req.params)
     const { title, content } = req.body;
+
+    const filePath = req.file ? req.file.path : null;
+
     if (title !== null || content !== null) {
       if (title === null) {
         res.status(400).json({ error: "title is empty" });
@@ -235,12 +247,64 @@ app.put(
         if (req.user.userId === userId) {
           try {
             const result = await pool.query(
+              `INSERT INTO notes (user_id,title,content,file) VALUES ($1, $2, $3,$4) RETURNING *`,
+              [userId, title, content, filePath]
+            );
+            res.status(201).json(result.rows[0]);
+          } catch (error) {
+            console.error(error.stack);
+            res.status(500).json({ error: error.message });
+          }
+        } else {
+          res.status(401).json({ error: "Unauthorize account" });
+        }
+      }
+    } else {
+      res.status(400).json({ error: "filed is empty" });
+    }
+  }
+);
+
+//update notes
+app.put(
+  "/api/users/:userId/notes/:noteId",
+  upload.single("file"),
+  authenticateToken,
+  async (req, res) => {
+    const { userId, noteId } = req.params;
+    const { title, content } = req.body;
+    const filePath = req.file ? req.file.path : null;
+    if (title !== null || content !== null) {
+      if (title === null) {
+        res.status(400).json({ error: "title is empty" });
+      } else if (content === null) {
+        res.status(400).json({ error: "content is empty" });
+      } else {
+        if (req.user.userId === userId) {
+          try {
+            const oldfile = await pool.query(
+              "SELECT file FROM notes WHERE id = $1",
+              [noteId]
+            );
+            const oldfilePath = oldfile.rows[0].file;
+            console.log("path", oldfilePath);
+            if (oldfilePath.rowCount === 0) {
+              return res.status(404).json({ message: "Note not found" });
+            }
+
+            if (req.file) {
+              if (fs.existsSync(oldfilePath)) {
+                fs.unlinkSync(oldfilePath);
+              }
+            }
+            const result = await pool.query(
               `UPDATE notes 
-            SET title = $1, content = $2 
+            SET title = $1, content = $2, file = $5
             WHERE user_id = $3 AND id = $4 
             RETURNING *`,
-              [title, content, userId, noteId]
+              [title, content, userId, noteId, filePath]
             );
+            // console.log(result)
             res.json(result.rows[0]);
           } catch (error) {
             // console.error(error.stack);
@@ -264,13 +328,30 @@ app.delete(
     const { userId, noteId } = req.params;
     if (req.user.userId === userId) {
       try {
+        const checkId = await pool.query("SELECT id FROM notes WHERE id =$1", [
+          noteId,
+        ]);
+        if (checkId.rowCount === 0) {
+          return res.status(404).json({ message: "Note not found." });
+        }
+        const file = await pool.query("SELECT file FROM notes WHERE id = $1", [
+          noteId,
+        ]);
+        const filePath = file.rows[0].file;
+        if (file.rowCount === 0) {
+          return res.status(404).json({ message: "Note not found." });
+        }
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
         const result = await pool.query(
           `DELETE FROM notes
           WHERE id = $1
           RETURNING *`,
           [noteId]
         );
-        res.status(204).json({ message: "Note deleted" });
+        console.log(result.rows);
+        res.status(200).json({ message: "Note deleted", json: result.rows[0] });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
