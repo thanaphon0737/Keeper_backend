@@ -9,6 +9,7 @@ import rateLimit from "express-rate-limit";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { error } from "console";
 
 const { Pool } = pg;
 const app = express();
@@ -198,34 +199,137 @@ app.get("/api/users/:id", authenticateToken, async (req, res) => {
 app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
   console.log("query notes");
   const userId = req.params.userId;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
-  const offset = (page - 1) * limit;
-  if (req.user.userId === userId) {
-    try {
-      const noteData = await pool.query(
-        `SELECT * FROM notes WHERE user_id = $1 and deleted = false ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
-        [userId, limit, offset]
-      );
-      const countResult = await pool.query(
-        "SELECT COUNT(*) FROM notes WHERE deleted = false"
-      );
-      const total = parseInt(countResult.rows[0].count);
 
-      console.log(total);
-      res.json({
-        page,
-        totalPages: Math.ceil(total / limit),
-        notes: noteData.rows,
-      });
-    } catch (error) {
-      console.error("error executing query", error.stack);
-      res.status(500).json({ error: error.message });
-    }
-  } else {
-    res.status(401).json({ error: "Unauthorize account" });
+  const { q, tag, page = 1, limit = 10 } = req.query;
+  const offset = (page - 1) * limit;
+
+  if (req.user.userId !== userId) {
+    return res.status(403).json({
+      error: "Forbidden",
+    });
+  }
+  let values = [userId];
+  let where = [`notes.user_id = $1`];
+  let join = "";
+  // search by title or content
+  if (q) {
+    values.push(`%${q}%`);
+    where.push(
+      `(notes.title ILIKE $${values.length} OR notes.content ILIKE $${values.length})`
+    );
+  }
+  if (tag) {
+    join = `
+    LEFT JOIN note_tags ON notes.id = note_tags.note_id
+    LEFT JOIN tags ON tags.id = note_tags.tag_id
+    `;
+    values.push(tag);
+    where.push(`tags.name = $${values.length}`);
+  }
+  values.push(limit);
+  values.push(offset);
+  const query = `
+    SELECT DISTINCT notes.* 
+    FROM notes
+    ${join}
+    WHERE ${where.join(" AND ")}
+    ORDER BY notes.created_at DESC
+    LIMIT $${values.length - 1} OFFSET $${values.length}
+  `;
+  try {
+    const noteData = await pool.query(query, values);
+    const countResult = await pool.query(
+      "SELECT COUNT(*) FROM notes WHERE deleted = false"
+    );
+    const total = parseInt(countResult.rows[0].count);
+
+    console.log(total);
+    res.json({
+      page,
+      totalPages: Math.ceil(total / limit),
+      notes: noteData.rows,
+    });
+  } catch (error) {
+    console.error("error executing query", error.stack);
+    res.status(500).json({ error: error.message });
   }
 });
+//get tags by userId
+app.get("/api/users/:userId/tags", authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT tags.name
+      FROM notes 
+      JOIN note_tags ON notes.id = note_tags.note_id 
+      JOIN tags ON tags.id = note_tags.tag_id
+      WHERE notes.user_id = $1
+      `, [userId]
+    );
+    res.status(200).json({
+      userId: userId,
+      totalTags: result.rowCount,
+      tags: result.rows
+    })
+  } catch (error) {
+    res.status(500).json({error: error.message})
+  }
+});
+// get tags
+app.get("/api/notes/tags", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM tags");
+    res.status(200).json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+// create tags
+app.post("/api/users/:userId/tags", authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+  const { name } = req.body;
+  if (req.user.userId !== userId) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  if (name === null) {
+    return res.status(400).json({ error: "name is empty" });
+  }
+  try {
+    const result = await pool.query(
+      "INSERT INTO tags (name) VALUES ($1) RETURNING * ",
+      [name]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// create relation tag and note
+app.post(
+  "/api/users/:userId/notes/:noteId",
+  authenticateToken,
+  async (req, res) => {
+    const { userId, noteId } = req.params;
+    const { tagId } = req.body;
+    if (req.user.userId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (tagId === null) {
+      return res.status(400).json({ error: "tagId is required" });
+    }
+    try {
+      const result = await pool.query(
+        "INSERT INTO note_tags (tag_id,note_id) VALUES ($1,$2) RETURNING *",
+        [tagId, noteId]
+      );
+      return res.status(201).json(result.rows);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+);
 //create notes
 app.post(
   "/api/users/:userId/notes",
