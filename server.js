@@ -44,7 +44,7 @@ app.get("/", (req, res) => {
 // rate limitaion for api
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 10000,
   message: "Too many request, try again later.",
 });
 app.use(limiter);
@@ -210,7 +210,10 @@ app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
   }
   let values = [userId];
   let where = [`notes.user_id = $1`];
-  let join = "";
+  let join = `
+    LEFT JOIN note_tags ON notes.id = note_tags.note_id
+    LEFT JOIN tags ON tags.id = note_tags.tag_id
+    `;
   // search by title or content
   if (q) {
     values.push(`%${q}%`);
@@ -219,17 +222,17 @@ app.get("/api/users/:userId/notes", authenticateToken, async (req, res) => {
     );
   }
   if (tag) {
-    join = `
-    LEFT JOIN note_tags ON notes.id = note_tags.note_id
-    LEFT JOIN tags ON tags.id = note_tags.tag_id
-    `;
+    // join = `
+    // LEFT JOIN note_tags ON notes.id = note_tags.note_id
+    // LEFT JOIN tags ON tags.id = note_tags.tag_id
+    // `;
     values.push(tag);
     where.push(`tags.name = $${values.length}`);
   }
   values.push(limit);
   values.push(offset);
   const query = `
-    SELECT DISTINCT notes.* 
+    SELECT notes.*,name AS tag_name
     FROM notes
     ${join}
     WHERE ${where.join(" AND ")}
