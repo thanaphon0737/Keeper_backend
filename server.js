@@ -268,15 +268,16 @@ app.get("/api/users/:userId/tags", authenticateToken, async (req, res) => {
       JOIN note_tags ON notes.id = note_tags.note_id 
       JOIN tags ON tags.id = note_tags.tag_id
       WHERE notes.user_id = $1
-      `, [userId]
+      `,
+      [userId]
     );
     res.status(200).json({
       userId: userId,
       totalTags: result.rowCount,
-      tags: result.rows
-    })
+      tags: result.rows,
+    });
   } catch (error) {
-    res.status(500).json({error: error.message})
+    res.status(500).json({ error: error.message });
   }
 });
 // get tags
@@ -341,7 +342,7 @@ app.post(
   async (req, res) => {
     const { userId } = req.params;
     // console.log(req.params)
-    const { title, content } = req.body;
+    const { title, content, tagId } = req.body;
 
     const filePath = req.file ? req.file.path : null;
 
@@ -357,6 +358,13 @@ app.post(
               `INSERT INTO notes (user_id,title,content,file) VALUES ($1, $2, $3,$4) RETURNING *`,
               [userId, title, content, filePath]
             );
+            const noteId = result.rows[0].id;
+            if (tagId !== null) {
+              const resultTag = await pool.query(
+                "INSERT INTO note_tags (tag_id,note_id) VALUES ($1,$2) RETURNING *",
+                [tagId, noteId]
+              );
+            }
             res.status(201).json(result.rows[0]);
           } catch (error) {
             console.error(error.stack);
